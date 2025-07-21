@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -102,7 +103,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter":
-				code := m.codeInput.Value()
+				code := strings.TrimSpace(m.codeInput.Value())
 				if code == "" {
 					m.errorMessage = "Please enter the code!\n\n"
 					return m, nil
@@ -119,7 +120,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.errorMessage = "Could not authenticate with Slack\n\n"
 					return m, nil
 				}
-				m.userName = authTest.User
+				user, err := api.GetUserInfo(authTest.UserID)
+				if err != nil {
+					m.errorMessage = "Could not authenticate with Slack\n\n"
+					return m, nil
+				}
+				name := user.Profile.DisplayName
+				if name == "" {
+					name = user.Profile.FirstName
+				}
+				m.userName = name
 				m.state = "showStatusInput"
 				m.statusInput.Focus()
 				return m, textinput.Blink
@@ -184,6 +194,7 @@ func (m model) View() string {
 		s += m.statusInput.View() + "\n\n"
 	case "showEmojiInput":
 		s += "Welcome " + m.userName + "!" + "\n\n"
+		s += m.statusInput.View() + "\n\n"
 		s += m.emojiInput.View() + "\n\n"
 	case "end":
 		if m.errorMessage != "" {
@@ -200,7 +211,7 @@ func (m model) View() string {
 func getOauthUrl() string {
 	params := url.Values{}
 	params.Add("client_id", clientID)
-	params.Add("user_scope", "users.profile:write")
+	params.Add("user_scope", "users.profile:write,users:read")
 	params.Add("redirect_uri", redirectURI)
 
 	return "https://slack.com/oauth/v2/authorize?" + params.Encode()
@@ -223,9 +234,11 @@ func exchangeCodeForToken(code string) (string, error) {
 		return "", err
 	}
 	var result struct {
-		OK          bool   `json:"ok"`
-		AccessToken string `json:"access_token"`
-		Error       string `json:"error"`
+		OK         bool   `json:"ok"`
+		Error      string `json:"error"`
+		AuthedUser struct {
+			AccessToken string `json:"access_token"`
+		} `json:"authed_user"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -236,5 +249,5 @@ func exchangeCodeForToken(code string) (string, error) {
 		return "", fmt.Errorf("slack error: %s", result.Error)
 	}
 
-	return result.AccessToken, nil
+	return result.AuthedUser.AccessToken, nil
 }
