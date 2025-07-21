@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -10,20 +13,26 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/joho/godotenv"
 	"github.com/pkg/browser"
+	"github.com/slack-go/slack"
 )
 
 type model struct {
 	codeInput    textinput.Model
-	code         string
-	token        string
+	slackClient  *slack.Client
 	statusInput  textinput.Model
 	status       string
+	emojiInput   textinput.Model
+	emoji        string
 	userName     string
 	errorMessage string
 	state        string
 }
 
 var err error = godotenv.Load()
+
+var clientID string = os.Getenv("SLACK_CLIENT_ID")
+var redirectURI string = os.Getenv("SLACK_REDIRECT_URI")
+var clientSecret string = os.Getenv("SLACK_CLIENT_SECRET")
 
 func main() {
 	if err != nil {
@@ -43,9 +52,19 @@ func initialModel() model {
 	codeInput.CharLimit = 100
 	codeInput.Width = 100
 
+	statusInput := textinput.New()
+	statusInput.Placeholder = "Input your new status here..."
+	statusInput.Width = 100
+
+	emojiInput := textinput.New()
+	emojiInput.Placeholder = "Input your new status emoji here..."
+	emojiInput.Width = 100
+
 	return model{
-		codeInput: codeInput,
-		state:     "initial",
+		codeInput:   codeInput,
+		statusInput: statusInput,
+		emojiInput:  emojiInput,
+		state:       "initial",
 	}
 }
 
@@ -54,11 +73,12 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.state == "initial" {
+	switch m.state {
+	case "initial":
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
-			case "q":
+			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter":
 				err := browser.OpenURL(getOauthUrl())
@@ -75,11 +95,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	} else if m.state == "showCodeInput" {
+	case "showCodeInput":
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
-			case "q":
+			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "enter":
 				code := m.codeInput.Value()
@@ -87,13 +107,66 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.errorMessage = "Please enter the code!\n\n"
 					return m, nil
 				}
-				m.code = code
-				return m, nil
+				token, err := exchangeCodeForToken(code)
+				if err != nil {
+					m.errorMessage = "Authorization failed\n\n"
+					return m, nil
+				}
+				api := slack.New(token)
+				m.slackClient = api
+				authTest, err := api.AuthTest()
+				if err != nil {
+					m.errorMessage = "Could not authenticate with Slack\n\n"
+					return m, nil
+				}
+				m.userName = authTest.User
+				m.state = "showStatusInput"
+				m.statusInput.Focus()
+				return m, textinput.Blink
 			}
 		}
 		var cmd tea.Cmd
 		m.codeInput, cmd = m.codeInput.Update(msg)
 		return m, cmd
+
+	case "showStatusInput":
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				m.status = m.statusInput.Value()
+				m.state = "showEmojiInput"
+				m.emojiInput.Focus()
+				return m, textinput.Blink
+			}
+		}
+		var cmd tea.Cmd
+		m.statusInput, cmd = m.statusInput.Update(msg)
+		return m, cmd
+
+	case "showEmojiInput":
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				m.emoji = m.emojiInput.Value()
+				if err := m.slackClient.SetUserCustomStatus(m.status, m.emoji, 0); err != nil {
+					m.errorMessage = "Error updating your slack status"
+					return m, nil
+				}
+				m.state = "end"
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.emojiInput, cmd = m.emojiInput.Update(msg)
+		return m, cmd
+	case "end":
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -106,6 +179,18 @@ func (m model) View() string {
 		s += "Press enter to sign in with Slack\n\n"
 	case "showCodeInput":
 		s += m.codeInput.View() + "\n\n"
+	case "showStatusInput":
+		s += "Welcome " + m.userName + "!" + "\n\n"
+		s += m.statusInput.View() + "\n\n"
+	case "showEmojiInput":
+		s += "Welcome " + m.userName + "!" + "\n\n"
+		s += m.emojiInput.View() + "\n\n"
+	case "end":
+		if m.errorMessage != "" {
+			s += "We couldn't update your status 😔\n\nHave a great day\n\n"
+		} else {
+			s += "✅ SUCCESS ✅\n\nEnjoy your new status\n\n"
+		}
 	}
 	s += m.errorMessage
 	s += "Press q to quit\n"
@@ -113,13 +198,43 @@ func (m model) View() string {
 }
 
 func getOauthUrl() string {
-	clientID := os.Getenv("SLACK_CLIENT_ID")
-	redirectURI := os.Getenv("SLACK_REDIRECT_URI")
-
 	params := url.Values{}
 	params.Add("client_id", clientID)
 	params.Add("user_scope", "users.profile:write")
 	params.Add("redirect_uri", redirectURI)
 
 	return "https://slack.com/oauth/v2/authorize?" + params.Encode()
+}
+
+func exchangeCodeForToken(code string) (string, error) {
+	data := url.Values{}
+	data.Set("client_id", clientID)
+	data.Set("client_secret", clientSecret)
+	data.Set("code", code)
+	data.Set("redirect_uri", redirectURI)
+	resp, err := http.PostForm("https://slack.com/api/oauth.v2.access", data)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		OK          bool   `json:"ok"`
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", err
+	}
+
+	if !result.OK {
+		return "", fmt.Errorf("slack error: %s", result.Error)
+	}
+
+	return result.AccessToken, nil
 }
