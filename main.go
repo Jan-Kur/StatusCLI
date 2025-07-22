@@ -12,7 +12,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/joho/godotenv"
 	"github.com/pkg/browser"
 	"github.com/slack-go/slack"
 )
@@ -29,15 +28,16 @@ type model struct {
 	state        string
 }
 
-var err error = godotenv.Load()
-
-var clientID string = os.Getenv("SLACK_CLIENT_ID")
-var redirectURI string = os.Getenv("SLACK_REDIRECT_URI")
-var clientSecret string = os.Getenv("SLACK_CLIENT_SECRET")
+var (
+	clientID     = ""
+	clientSecret = ""
+	redirectURI  = ""
+)
 
 func main() {
-	if err != nil {
-		fmt.Println("Couldn't load env variables")
+	if clientID == "" || clientSecret == "" || redirectURI == "" {
+		fmt.Println("Missing build-time secrets. Make sure you injected SLACK_CLIENT_ID, etc.")
+		os.Exit(1)
 	}
 
 	program := tea.NewProgram(initialModel())
