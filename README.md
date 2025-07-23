@@ -2,7 +2,7 @@
 
 A project to learn Go and Bubble Tea. Change your Slack status in 5 seconds from the terminal.
 
-
+https://github.com/user-attachments/assets/32e459a5-83ea-4068-8abe-29f92c8e9329
 
 ## Installation
 
