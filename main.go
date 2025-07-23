@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,11 +70,18 @@ func initialModel() model {
 	}
 }
 
+type doneMsg struct{}
+
 func (m model) Init() tea.Cmd {
 	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg.(type) {
+	case doneMsg:
+		return m, tea.Quit
+	}
+
 	switch m.state {
 	case "initial":
 		switch msg := msg.(type) {
@@ -164,6 +172,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "enter":
 				m.emoji = m.emojiInput.Value()
+				if strings.ContainsAny(m.emoji, "�?") {
+					m.emoji = ""
+				}
 				if err := m.slackClient.SetUserCustomStatus(m.status, m.emoji, 0); err != nil {
 					m.errorMessage = "Error updating your slack status"
 					return m, nil
@@ -176,7 +187,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emojiInput, cmd = m.emojiInput.Update(msg)
 		return m, cmd
 	case "end":
-		return m, tea.Quit
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return doneMsg{}
+		})
 	}
 	return m, nil
 }
